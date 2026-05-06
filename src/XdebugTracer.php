@@ -367,6 +367,97 @@ class XdebugTracer
         echo "🔄 {$stats->maxDepth} max call depth\n";
     }
 
+    /**
+     * Filter trace file to only include calls to specified functions (post-processing)
+     *
+     * @param list<string> $functionNames Function names to include
+     *
+     * @return list<array{level: int, function: string, file: string, line: int, params: string}>
+     */
+    public function grepFunctions(string $traceFile, array $functionNames): array
+    {
+        if (! file_exists($traceFile) || ! is_readable($traceFile)) {
+            throw new InvalidArgumentException("Trace file not found or not readable: $traceFile");
+        }
+
+        $calls = [];
+
+        if (str_ends_with($traceFile, '.gz')) {
+            $handle = gzopen($traceFile, 'r');
+            if (! $handle) {
+                throw new RuntimeException("Cannot open compressed trace file: $traceFile");
+            }
+
+            while (($line = gzgets($handle)) !== false) {
+                $entry = $this->parseTraceLineForGrep(trim($line), $functionNames);
+                if ($entry === null) {
+                    continue;
+                }
+
+                $calls[] = $entry;
+            }
+
+            gzclose($handle);
+        } else {
+            $handle = fopen($traceFile, 'r');
+            if (! $handle) {
+                throw new RuntimeException("Cannot open trace file: $traceFile");
+            }
+
+            while (($line = fgets($handle)) !== false) {
+                $entry = $this->parseTraceLineForGrep(trim($line), $functionNames);
+                if ($entry === null) {
+                    continue;
+                }
+
+                $calls[] = $entry;
+            }
+
+            fclose($handle);
+        }
+
+        return $calls;
+    }
+
+    /**
+     * Parse a single trace line and return entry if function matches the filter list
+     *
+     * @param list<string> $functionNames
+     *
+     * @return array{level: int, function: string, file: string, line: int, params: string}|null
+     */
+    private function parseTraceLineForGrep(string $line, array $functionNames): array|null
+    {
+        $parts = explode("\t", $line);
+        if (count($parts) < 6) {
+            return null;
+        }
+
+        $entryExit = $parts[2];
+        // Only match function entries (not exits or returns)
+        if ($entryExit !== '0') {
+            return null;
+        }
+
+        $function = $parts[5];
+        if (! in_array($function, $functionNames, true)) {
+            return null;
+        }
+
+        $level = (int) $parts[0];
+        $file = $parts[8] ?? '';
+        $lineNum = (int) ($parts[9] ?? 0);
+        $params = $parts[11] ?? '';
+
+        return [
+            'level' => $level,
+            'function' => $function,
+            'file' => $file,
+            'line' => $lineNum,
+            'params' => $params,
+        ];
+    }
+
     public function analyzeWithClaude(string $traceFile): void
     {
         $languageOutput = shell_exec('defaults read -g AppleLanguages') ?: (getenv('LANG') ?: getenv('LC_ALL') ?: '');

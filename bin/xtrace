@@ -6,6 +6,7 @@ declare(strict_types=1);
 // Load autoloader and get project root
 $projectRoot = require __DIR__ . '/autoload.php';
 
+use Koriym\XdebugMcp\HookDispatchAnalyzer;
 use Koriym\XdebugMcp\XdebugRunner;
 use Koriym\XdebugMcp\XdebugTracer;
 
@@ -33,6 +34,10 @@ function showHelp(string $scriptName): void {
     echo "  --claude                    Auto-analyze trace data with Claude AI\n";
     echo "  --context=TEXT             Add contextual description for AI analysis\n";
     echo "  --include-vendor=PATTERNS  Include vendor packages in trace analysis\n";
+    echo "  --grep-functions=FUNCS     Filter trace to only include calls to specified\n";
+    echo "                             functions (comma-separated, e.g., \"mysqli_query,PDO->prepare\")\n";
+    echo "  --wp-hooks                 Analyze WordPress hook dispatch (do_action/apply_filters)\n";
+    echo "                             and map callbacks executed within each hook scope\n";
     echo "  --help, -h                 Show this comprehensive help\n";
     echo "\n";
     echo "EXAMPLES:\n";
@@ -77,14 +82,18 @@ if ($separatorIndex === false) {
 $ownArgs = array_slice($argv, 1, $separatorIndex - 1);
 $jsonOutput = in_array('--json', $ownArgs);
 $claudeAnalysis = in_array('--claude', $ownArgs);
+$wpHooks = in_array('--wp-hooks', $ownArgs);
 $context = null;
 $includeVendor = null;
+$grepFunctions = null;
 
 foreach ($ownArgs as $arg) {
     if (str_starts_with($arg, '--context=')) {
         $context = substr($arg, 10);
     } elseif (str_starts_with($arg, '--include-vendor=')) {
         $includeVendor = substr($arg, 17);
+    } elseif (str_starts_with($arg, '--grep-functions=')) {
+        $grepFunctions = substr($arg, 17);
     }
 }
 
@@ -142,6 +151,21 @@ try {
             $result['output'] = $scriptOutput;
         }
 
+        // Apply --grep-functions filter (post-processing)
+        if ($grepFunctions !== null && $grepFunctions !== '') {
+            $functionNames = array_filter(array_map('trim', explode(',', $grepFunctions)));
+            $calls = $tracer->grepFunctions($traceFile, $functionNames);
+            $result['grep_functions'] = $functionNames;
+            $result['calls'] = $calls;
+        }
+
+        // Apply --wp-hooks analysis (post-processing)
+        if ($wpHooks) {
+            $hookAnalyzer = new HookDispatchAnalyzer();
+            $hookData = $hookAnalyzer->analyze($traceFile);
+            $result['wp_hooks'] = $hookData;
+        }
+
         echo json_encode($result, JSON_UNESCAPED_SLASHES) . "\n";
     } else {
         echo "✅ Trace complete: $traceFile\n";
@@ -156,6 +180,21 @@ try {
 
         if ($stats->dbOperations > 0) {
             echo "🗃️ {$stats->dbOperations} database queries\n";
+        }
+
+        // Apply --wp-hooks analysis in human-readable mode
+        if ($wpHooks) {
+            $hookAnalyzer = new HookDispatchAnalyzer();
+            $hookData = $hookAnalyzer->analyze($traceFile);
+            echo "\n🪝 WordPress Hook Analysis:\n";
+            echo "   {$hookData['total_hooks']} hooks dispatched, {$hookData['total_callbacks']} callbacks executed\n";
+            foreach ($hookData['hooks'] as $hookName => $hookInfo) {
+                $callbackCount = count($hookInfo['callbacks']);
+                echo "   - {$hookName}: {$callbackCount} callback(s)\n";
+                foreach ($hookInfo['callbacks'] as $cb) {
+                    echo "     → {$cb['function']} ({$cb['file']}:{$cb['line']})\n";
+                }
+            }
         }
 
         echo "\n💡 claude \"Analyze $traceFile\"\n";

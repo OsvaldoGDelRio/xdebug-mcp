@@ -56,7 +56,7 @@ class McpServerIntegrationTest extends TestCase
         $this->assertEquals(2, $toolsResponse['id']);
         $this->assertArrayHasKey('result', $toolsResponse);
         $this->assertArrayHasKey('tools', $toolsResponse['result']);
-        $this->assertCount(5, $toolsResponse['result']['tools']);
+        $this->assertCount(6, $toolsResponse['result']['tools']);
 
         // Verify analysis tools are present
         $toolNames = array_column($toolsResponse['result']['tools'], 'name');

@@ -12,6 +12,7 @@ use Koriym\XdebugMcp\DTO\ToolsListResult;
 use Koriym\XdebugMcp\Exceptions\FileNotFoundException;
 use Koriym\XdebugMcp\Exceptions\InvalidArgumentException;
 use Koriym\XdebugMcp\Exceptions\InvalidToolException;
+use Koriym\XdebugMcp\FunctionReachabilityAnalyzer;
 use Throwable;
 
 use function array_filter;
@@ -30,6 +31,7 @@ use function fgets;
 use function file;
 use function file_exists;
 use function file_get_contents;
+use function file_put_contents;
 use function getcwd;
 use function getenv;
 use function implode;
@@ -44,6 +46,7 @@ use function str_contains;
 use function str_ends_with;
 use function str_starts_with;
 use function strlen;
+use function strpos;
 use function substr;
 use function sys_get_temp_dir;
 use function tempnam;
@@ -111,6 +114,11 @@ final class McpServer
                             'description' => 'Include vendor packages in trace (e.g., "bear/*,ray/di" or "*/*" for all)',
                             'default' => '',
                         ],
+                        'grep_functions' => [
+                            'type' => 'string',
+                            'description' => 'Comma-separated function names to filter trace output (e.g., "mysqli_query,PDO->prepare")',
+                            'default' => '',
+                        ],
                     ],
                     'required' => ['script'],
                 ],
@@ -175,7 +183,7 @@ final class McpServer
             ),
             'xcoverage' => new McpTool(
                 'xcoverage',
-                'Analyze test coverage. Returns JSON with $schema URL for semantic details. Key fields: {summary: {coverage_percent}, uncovered: {file: [lines]}}. Shows only uncovered lines. Vendor excluded by default.',
+                'Analyze test coverage. Returns JSON with $schema URL for semantic details. Key fields: {summary: {coverage_percent}, uncovered: {file: [lines]}}. Shows only uncovered lines. Vendor excluded by default. Optionally cross-references with a function map for reachability analysis.',
                 [
                     'type' => 'object',
                     'properties' => [
@@ -191,6 +199,11 @@ final class McpServer
                         'include_vendor' => [
                             'type' => 'string',
                             'description' => 'Include vendor packages in coverage (e.g., "bear/*,ray/di" or "*/*" for all)',
+                            'default' => '',
+                        ],
+                        'function_map' => [
+                            'type' => 'string',
+                            'description' => 'Path to function-map JSON file for reachability analysis. Each entry: {"function_name": "...", "file_path": "...", "line_start": N, "line_end": N}',
                             'default' => '',
                         ],
                     ],
@@ -224,6 +237,43 @@ final class McpServer
                         ],
                     ],
                     'required' => ['script'],
+                ],
+            ),
+            'xcompare' => new McpTool(
+                'xcompare',
+                'Compare variable states at the same breakpoint across two different executions. Returns JSON with $schema URL for semantic details. Key fields: {run_a, run_b, diff: {changed, unchanged, only_in_a, only_in_b}, analysis_hints}.',
+                [
+                    'type' => 'object',
+                    'properties' => [
+                        'breakpoint' => [
+                            'type' => 'string',
+                            'description' => 'Breakpoint location (e.g., "src/Calculator.php:25")',
+                        ],
+                        'run_a' => [
+                            'type' => 'string',
+                            'description' => 'First execution command (e.g., "php calc.php 10")',
+                        ],
+                        'run_b' => [
+                            'type' => 'string',
+                            'description' => 'Second execution command (e.g., "php calc.php 0")',
+                        ],
+                        'label_a' => [
+                            'type' => 'string',
+                            'description' => 'Label for first run (default: "run_a")',
+                            'default' => 'run_a',
+                        ],
+                        'label_b' => [
+                            'type' => 'string',
+                            'description' => 'Label for second run (default: "run_b")',
+                            'default' => 'run_b',
+                        ],
+                        'context' => [
+                            'type' => 'string',
+                            'description' => 'Context for the comparison (e.g., "Compare division behavior with normal vs zero input")',
+                            'default' => '',
+                        ],
+                    ],
+                    'required' => ['breakpoint', 'run_a', 'run_b'],
                 ],
             ),
         ];
@@ -372,7 +422,7 @@ final class McpServer
                 'name' => 'xdebug-mcp-server',
                 'version' => '2.0.0',
             ],
-            'instructions' => 'PHP debugging and analysis tools using Xdebug. Use when asked to trace, debug, profile, or analyze coverage of PHP code. Tools: xtrace (execution flow), xstep (breakpoint debugging), xprofile (performance), xcoverage (test coverage), xback (stack traces).',
+            'instructions' => 'PHP debugging and analysis tools using Xdebug. Use when asked to trace, debug, profile, or analyze coverage of PHP code. Tools: xtrace (execution flow), xstep (breakpoint debugging), xprofile (performance), xcoverage (test coverage), xback (stack traces), xcompare (compare variable states across two executions).',
         ]));
     }
 
@@ -409,6 +459,11 @@ final class McpServer
                         [
                             'name' => 'include_vendor',
                             'description' => 'Include vendor packages in trace (e.g., "bear/*,ray/di" or "*/*" for all)',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'grep_functions',
+                            'description' => 'Comma-separated function names to filter trace output (e.g., "mysqli_query,PDO->prepare")',
                             'required' => false,
                         ],
                         [
@@ -482,7 +537,7 @@ final class McpServer
                 ],
                 [
                     'name' => 'xcoverage',
-                    'description' => 'Analyze test coverage. Returns JSON with $schema URL for semantic details. Key fields: {summary: {coverage_percent}, uncovered: {file: [lines]}}. Shows only uncovered lines. Vendor excluded by default.',
+                    'description' => 'Analyze test coverage. Returns JSON with $schema URL for semantic details. Key fields: {summary: {coverage_percent}, uncovered: {file: [lines]}}. Shows only uncovered lines. Vendor excluded by default. Optionally cross-references with a function map for reachability analysis.',
                     'arguments' => [
                         [
                             'name' => 'script',
@@ -497,6 +552,11 @@ final class McpServer
                         [
                             'name' => 'include_vendor',
                             'description' => 'Include vendor packages in coverage (e.g., "bear/*,ray/di" or "*/*" for all)',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'function_map',
+                            'description' => 'Path to function-map JSON file for reachability analysis',
                             'required' => false,
                         ],
                         [
@@ -782,6 +842,11 @@ final class McpServer
 
                 return $this->extractResultText($result);
 
+            case 'xcompare':
+                $result = $this->executeXCompare(null, $arguments);
+
+                return $this->extractResultText($result);
+
             default:
                 throw new InvalidToolException("Unknown tool: $toolName");
         }
@@ -823,6 +888,7 @@ final class McpServer
             $this->validatePhpBinaryScript($script);
             $context = $args['context'] ?? '';
             $includeVendor = $args['include_vendor'] ?? '';
+            $grepFunctions = $args['grep_functions'] ?? '';
 
             // Build command - user must specify PHP binary explicitly
             $cmd = $this->binDir . '/xtrace --json';
@@ -830,6 +896,11 @@ final class McpServer
             // Add include_vendor option if specified
             if ($includeVendor !== '') {
                 $cmd .= ' --include-vendor=' . escapeshellarg($includeVendor);
+            }
+
+            // Add grep_functions filter if specified
+            if ($grepFunctions !== '') {
+                $cmd .= ' --grep-functions=' . escapeshellarg($grepFunctions);
             }
 
             $cmd .= ' -- ' . $script;
@@ -1067,6 +1138,7 @@ final class McpServer
             $this->validatePhpBinaryScript($script);
             $context = $args['context'] ?? '';
             $includeVendor = $args['include_vendor'] ?? '';
+            $functionMap = $args['function_map'] ?? '';
 
             // Build command - user must specify PHP binary explicitly
             $cmd = $this->binDir . '/xcoverage';
@@ -1093,22 +1165,34 @@ final class McpServer
                 throw new InvalidArgumentException('Permission denied accessing: ' . $script);
             }
 
+            // Run function reachability analysis if function_map is provided
+            $reachabilityText = '';
+            if ($functionMap !== '' && $returnCode === 0) {
+                $reachabilityText = $this->runFunctionReachability($outputText, $functionMap);
+            }
+
+            $fullOutput = $outputText;
+            if ($reachabilityText !== '') {
+                $fullOutput .= "\n\n**Function Reachability Analysis**:\n```\n" . $reachabilityText . "\n```";
+            }
+
             return JsonRpcResponse::success($id, new GenericResult([
                 'messages' => [
                     [
                         'role' => 'assistant',
                         'content' => [
                             'type' => 'text',
-                            'text' => 'Code coverage analysis ' . ($returnCode === 0 ? 'completed' : 'failed') . ":\n\n**Script**: {$script}\n**Context**: {$context}\n**Format**: json\n**Command**: `{$cmd}`\n**Exit Code**: {$returnCode}\n\n**Coverage Report**:\n```\n" . $outputText . "\n```",
+                            'text' => 'Code coverage analysis ' . ($returnCode === 0 ? 'completed' : 'failed') . ":\n\n**Script**: {$script}\n**Context**: {$context}\n**Format**: json\n**Command**: `{$cmd}`\n**Exit Code**: {$returnCode}\n\n**Coverage Report**:\n```\n" . $fullOutput . "\n```",
                         ],
                     ],
                 ],
                 'debug_data' => [
                     'command' => $cmd,
                     'exit_code' => $returnCode,
-                    'output' => $outputText,
+                    'output' => $fullOutput,
                     'context' => $context,
                     'script' => $script,
+                    'function_map' => $functionMap,
                     'timestamp' => date('Y-m-d H:i:s'),
                 ],
             ]));
@@ -1116,6 +1200,41 @@ final class McpServer
             // @codeCoverageIgnoreStart - Exception handling path requires coverage collection failures which are environment-dependent and difficult to test reliably
             return JsonRpcResponse::error($id, -32000, 'xcoverage execution failed: ' . $e->getMessage());
             // @codeCoverageIgnoreEnd
+        }
+    }
+
+    /**
+     * Run function reachability analysis by saving coverage output to a temp file
+     * and cross-referencing with the function map
+     */
+    private function runFunctionReachability(string $coverageOutput, string $functionMapPath): string
+    {
+        // Save coverage output to temp file for analysis
+        $tempCoverageFile = tempnam(sys_get_temp_dir(), 'xcov_reachability_');
+        if ($tempCoverageFile === false) {
+            return 'Error: Could not create temp file for reachability analysis';
+        }
+
+        try {
+            // The coverage output may contain non-JSON text before the JSON data
+            // Try to find the JSON portion
+            $jsonStart = strpos($coverageOutput, '{');
+            if ($jsonStart === false) {
+                return 'Error: No JSON coverage data found in output';
+            }
+
+            $jsonData = substr($coverageOutput, $jsonStart);
+            file_put_contents($tempCoverageFile, $jsonData);
+
+            $analyzer = new FunctionReachabilityAnalyzer();
+
+            return $analyzer->analyzeToJson($tempCoverageFile, $functionMapPath);
+        } catch (Throwable $e) {
+            return 'Reachability analysis error: ' . $e->getMessage();
+        } finally {
+            if (file_exists($tempCoverageFile)) {
+                unlink($tempCoverageFile);
+            }
         }
     }
 
@@ -1188,6 +1307,78 @@ final class McpServer
         } catch (Throwable $e) {
             // @codeCoverageIgnoreStart - Exception handling path requires backtrace failures which are environment-dependent
             return JsonRpcResponse::error($id, -32000, 'xback execution failed: ' . $e->getMessage());
+            // @codeCoverageIgnoreEnd
+        }
+    }
+
+    /** @param array<string, string> $args */
+    private function executeXCompare(string|int|null $id, array $args): JsonRpcResponse
+    {
+        try {
+            $breakpoint = $args['breakpoint'] ?? '';
+            $runA = $args['run_a'] ?? '';
+            $runB = $args['run_b'] ?? '';
+            $labelA = $args['label_a'] ?? '';
+            $labelB = $args['label_b'] ?? '';
+            $context = $args['context'] ?? '';
+
+            if ($breakpoint === '') {
+                throw new InvalidArgumentException('breakpoint argument is required');
+            }
+
+            if ($runA === '' || $runB === '') {
+                throw new InvalidArgumentException('run_a and run_b arguments are required');
+            }
+
+            // Build command
+            $cmd = $this->binDir . '/xcompare';
+            $cmd .= ' --break=' . escapeshellarg($breakpoint);
+            $cmd .= ' --run-a=' . escapeshellarg($runA);
+            $cmd .= ' --run-b=' . escapeshellarg($runB);
+
+            if ($labelA !== '') {
+                $cmd .= ' --label-a=' . escapeshellarg($labelA);
+            }
+
+            if ($labelB !== '') {
+                $cmd .= ' --label-b=' . escapeshellarg($labelB);
+            }
+
+            if ($context !== '') {
+                $cmd .= ' --context=' . escapeshellarg($context);
+            }
+
+            // Execute command
+            $output = [];
+            $returnCode = 0;
+            exec($cmd . ' 2>&1', $output, $returnCode);
+
+            $outputText = implode("\n", $output);
+
+            return JsonRpcResponse::success($id, new GenericResult([
+                'messages' => [
+                    [
+                        'role' => 'assistant',
+                        'content' => [
+                            'type' => 'text',
+                            'text' => 'Comparison ' . ($returnCode === 0 ? 'completed' : 'failed') . ":\n\n**Breakpoint**: {$breakpoint}\n**Run A**: {$runA}\n**Run B**: {$runB}\n**Context**: {$context}\n**Command**: `{$cmd}`\n**Exit Code**: {$returnCode}\n\n**Output**:\n```\n" . $outputText . "\n```",
+                        ],
+                    ],
+                ],
+                'debug_data' => [
+                    'command' => $cmd,
+                    'exit_code' => $returnCode,
+                    'output' => $outputText,
+                    'context' => $context,
+                    'breakpoint' => $breakpoint,
+                    'run_a' => $runA,
+                    'run_b' => $runB,
+                    'timestamp' => date('Y-m-d H:i:s'),
+                ],
+            ]));
+        } catch (Throwable $e) {
+            // @codeCoverageIgnoreStart - Exception handling path requires xcompare failures which are environment-dependent
+            return JsonRpcResponse::error($id, -32000, 'xcompare execution failed: ' . $e->getMessage());
             // @codeCoverageIgnoreEnd
         }
     }
