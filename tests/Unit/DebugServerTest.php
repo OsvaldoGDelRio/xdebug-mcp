@@ -261,6 +261,18 @@ echo "Result: $result\n";
         $this->assertTrue(true); // Basic instantiation test
     }
 
+    public function testXmlParsingSanitizesInvalidNullCharacterReference(): void
+    {
+        $server = new DebugServer($this->testScript, 9004, null, [], true);
+        $reflection = new ReflectionClass($server);
+        $method = $reflection->getMethod('parseXmlResponse');
+
+        $xml = $method->invoke($server, '<response><property classname="Some\\Interface@anonymous&#0;" /></response>');
+
+        $this->assertNotNull($xml);
+        $this->assertSame('Some\\Interface@anonymous', (string) $xml->property['classname']);
+    }
+
     public function testCliJsonOutputWithBreakpoint(): void
     {
         $server = new DebugServer($this->testScript, 9004, 5, [], true);

@@ -166,7 +166,7 @@ final class DebugServer
     /** @var array{id: string, label: string, file: string, line: int, condition?: string}|null */
     private array|null $activeBreakpoint = null;
 
-    /** @param array{command?: list<string>, context?: string, breakpoint?: string, steps?: int, connectionTimeout?: float, executionTimeout?: float, traceOnly?: bool, maxSteps?: int, jsonOutput?: bool, breakpoints?: list<array{file: string, line: int|string, condition?: string}>, readTimeout?: float, watches?: list<string>, pretty?: bool, maxValueBytes?: int|null, maxDepth?: int|null} $options */
+    /** @param array{command?: list<string>, context?: string, breakpoint?: string, steps?: int, connectionTimeout?: float, executionTimeout?: float, traceOnly?: bool, maxSteps?: int, jsonOutput?: bool, breakpoints?: list<array{file: string, line: int|string, condition?: string}>, readTimeout?: float, watches?: list<string>, pretty?: bool, maxValueBytes?: int|null, maxDepth?: int|null, phpBinary?: string|null} $options */
     public function __construct(
         private readonly string $targetScript,
         private readonly int $debugPort,
@@ -344,18 +344,19 @@ final class DebugServer
 
                     $cmd = implode(' ', $command);
                     $this->traceFile = $traceFile;
-                } elseif ($command[0] === 'php') {
+                } elseif (XdebugRunner::isPhpBinary($command[0])) {
                     // Local PHP command
                     $scriptName = basename($this->targetScript, '.php');
                     $traceFile = '/tmp/trace-%t-' . $scriptName . '.xt';
                     $prependFilter = __DIR__ . '/../prepend_filter.php';
+                    $phpBinary = $command[0];
 
                     // Get appropriate Xdebug flag (empty if already loaded)
-                    $xdebugFlag = XdebugFinder::getXdebugFlag();
-                    $xdebugPart = $xdebugFlag !== '' ? $xdebugFlag . ' ' : '';
+                    $xdebugFlag = XdebugFinder::getXdebugFlagForPhpBinary($phpBinary);
+                    $xdebugPart = $xdebugFlag !== '' ? trim($xdebugFlag) . ' ' : '';
 
                     $cmd = sprintf(
-                        'XDEBUG_SESSION=xdebug-mcp php %s'
+                        'XDEBUG_SESSION=xdebug-mcp %s %s'
                         . '-dxdebug.mode=debug,trace '
                         . '-dxdebug.start_with_request=yes '
                         . '-dxdebug.client_host=127.0.0.1 '
@@ -372,6 +373,7 @@ final class DebugServer
                         . '-derror_log=/tmp/php.log '
                         . '-dauto_prepend_file=%s '
                         . '%s',
+                        escapeshellarg($phpBinary),
                         $xdebugPart,
                         $this->debugPort,
                         escapeshellarg($prependFilter),
@@ -386,13 +388,17 @@ final class DebugServer
                 $scriptName = basename($this->targetScript, '.php');
                 $traceFile = '/tmp/trace-%t-' . $scriptName . '.xt';
                 $prependFilter = __DIR__ . '/../prepend_filter.php';
+                $phpBinaryOption = $this->options['phpBinary'] ?? null;
+                $phpBinary = $phpBinaryOption !== null && $phpBinaryOption !== ''
+                    ? $phpBinaryOption
+                    : 'php';
 
                 // Get appropriate Xdebug flag (empty if already loaded)
-                $xdebugFlag = XdebugFinder::getXdebugFlag();
-                $xdebugPart = $xdebugFlag !== '' ? $xdebugFlag . ' ' : '';
+                $xdebugFlag = XdebugFinder::getXdebugFlagForPhpBinary($phpBinary);
+                $xdebugPart = $xdebugFlag !== '' ? trim($xdebugFlag) . ' ' : '';
 
                 $cmd = sprintf(
-                    'XDEBUG_SESSION=xdebug-mcp php %s'
+                    'XDEBUG_SESSION=xdebug-mcp %s %s'
                     . '-dxdebug.mode=debug,trace '
                     . '-dxdebug.start_with_request=yes '
                     . '-dxdebug.client_host=127.0.0.1 '
@@ -405,6 +411,7 @@ final class DebugServer
                     . '-dxdebug.connect_timeout_ms=5000 '
                     . '-dauto_prepend_file=%s '
                     . '%s',
+                    escapeshellarg($phpBinary),
                     $xdebugPart,
                     $this->debugPort,
                     escapeshellarg($prependFilter),
@@ -2318,7 +2325,7 @@ final class DebugServer
         $useErrors = libxml_use_internal_errors(true);
         libxml_clear_errors();
 
-        $xml = simplexml_load_string($xmlString);
+        $xml = simplexml_load_string($this->sanitizeXmlResponse($xmlString));
 
         // Get any errors that occurred
         $errors = libxml_get_errors();
@@ -2339,6 +2346,21 @@ final class DebugServer
         }
 
         return $xml;
+    }
+
+    /**
+     * Remove characters and character references that XML 1.0 cannot represent.
+     */
+    private function sanitizeXmlResponse(string $xmlString): string
+    {
+        $withoutInvalidReferences = preg_replace('/&#(?:0+|x0+);/i', '', $xmlString);
+        if ($withoutInvalidReferences !== null) {
+            $xmlString = $withoutInvalidReferences;
+        }
+
+        $withoutControlCharacters = preg_replace('/[^\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}]/u', '', $xmlString);
+
+        return $withoutControlCharacters ?? $xmlString;
     }
 
     /**
@@ -2805,7 +2827,7 @@ final class DebugServer
             }
 
             $variables = [];
-            $xml = simplexml_load_string($response);
+            $xml = $this->parseXmlResponse($response);
             if ($xml && (property_exists($xml, 'property') && $xml->property !== null)) {
                 foreach ($xml->property as $prop) {
                     $name = (string) $prop['name'];
@@ -2944,7 +2966,7 @@ final class DebugServer
                 return null;
             }
 
-            $xml = simplexml_load_string($response);
+            $xml = $this->parseXmlResponse($response);
             if (! $xml || (! property_exists($xml, 'property') || $xml->property === null)) {
                 return null;
             }
@@ -3448,7 +3470,7 @@ final class DebugServer
     private function parseStackFrames(string $stackXml): array
     {
         try {
-            $xml = simplexml_load_string($stackXml);
+            $xml = $this->parseXmlResponse($stackXml);
             if (! $xml || (! property_exists($xml, 'stack') || $xml->stack === null)) {
                 return [];
             }
@@ -3547,7 +3569,7 @@ final class DebugServer
     private function extractLocationDataFromBreakResponse(string $response): array|null
     {
         try {
-            $xml = simplexml_load_string($response);
+            $xml = $this->parseXmlResponse($response);
             if ($xml) {
                 // Register xdebug namespace
                 $xml->registerXPathNamespace('xdebug', 'https://xdebug.org/dbgp/xdebug');

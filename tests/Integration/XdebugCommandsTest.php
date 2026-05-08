@@ -180,7 +180,9 @@ PHP);
 
         try {
             $command = sprintf(
-                'cd %s && ./bin/xcoverage -- php ./vendor/bin/phpunit --no-coverage --no-configuration --coverage-filter %s %s 2>&1',
+                'cd %s && %s --cwd=%s -- php ./vendor/bin/phpunit --no-coverage --no-configuration --coverage-filter %s %s 2>&1',
+                escapeshellarg(sys_get_temp_dir()),
+                escapeshellarg($root . '/bin/xcoverage'),
                 escapeshellarg($root),
                 escapeshellarg($sourceDir),
                 escapeshellarg($testFile),

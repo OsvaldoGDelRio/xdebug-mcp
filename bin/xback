@@ -5,6 +5,7 @@ declare(strict_types=1);
 
 use Koriym\XdebugMcp\DebugServer;
 use Koriym\XdebugMcp\Constants;
+use Koriym\XdebugMcp\XdebugRunner;
 
 /**
  * Display help information
@@ -19,6 +20,9 @@ function showHelp(): void
     echo "  --break=SPEC      Breakpoint (file.php:line)\n";
     echo "  --depth=N         Maximum stack depth to return (default: 10)\n";
     echo "  --context=TEXT    Context description for AI analysis\n";
+    echo "  --cwd=PATH        Run the target command from this working directory\n";
+    echo "  --php-binary=PATH PHP binary used for local target commands\n";
+    echo "  --env=KEY=VALUE   Environment variable for the target command (repeatable)\n";
     echo "  --help, -h        Show this help\n";
     echo "\n";
     echo "OUTPUT: Structured JSON (schema: xback.json)\n";
@@ -112,6 +116,9 @@ function outputBacktraceJson(string $script, ?string $breakpointStr, string $con
     $breakpointStr = null;
     $depth = 10;
     $context = '';
+    $cwd = null;
+    $phpBinary = null;
+    $env = [];
     $command = [];
     $parseOptions = true;
 
@@ -140,6 +147,21 @@ function outputBacktraceJson(string $script, ?string $breakpointStr, string $con
             continue;
         }
 
+        if ($parseOptions && str_starts_with($arg, '--cwd=')) {
+            $cwd = substr($arg, 6);
+            continue;
+        }
+
+        if ($parseOptions && str_starts_with($arg, '--php-binary=')) {
+            $phpBinary = substr($arg, 13);
+            continue;
+        }
+
+        if ($parseOptions && str_starts_with($arg, '--env=')) {
+            $env[] = substr($arg, 6);
+            continue;
+        }
+
         if ($parseOptions && ($arg === '--help' || $arg === '-h')) {
             showHelp();
         }
@@ -152,6 +174,10 @@ function outputBacktraceJson(string $script, ?string $breakpointStr, string $con
     if (empty($command)) {
         showHelp();
     }
+
+    applyRuntimeEnvironment($env);
+    applyWorkingDirectory($cwd);
+    $command = applyPhpBinaryToCommand($command, $phpBinary);
 
     // Detect Docker/Podman/Kubectl commands
     $isDockerCommand = \Koriym\XdebugMcp\ContainerHelper::isContainerCommand($command);
@@ -180,8 +206,13 @@ function outputBacktraceJson(string $script, ?string $breakpointStr, string $con
         } else {
             throw new RuntimeException("Could not find PHP command in Docker command: " . implode(' ', $command));
         }
-    } elseif ($command[0] === 'php' && isset($command[1])) {
-        $targetScript = $command[1];
+    } elseif (isset($command[0]) && XdebugRunner::isPhpBinary($command[0])) {
+        $scriptIndex = \Koriym\XdebugMcp\ContainerHelper::findScriptIndex($command, 0);
+        if ($scriptIndex === false) {
+            throw new RuntimeException("Could not determine target script from command: " . implode(' ', $command));
+        }
+
+        $targetScript = $command[$scriptIndex];
         if (!file_exists($targetScript)) {
             throw new RuntimeException("Target script not found: $targetScript");
         }
@@ -204,6 +235,7 @@ function outputBacktraceJson(string $script, ?string $breakpointStr, string $con
         'jsonOutput' => true,
         'context' => $context,
         'maxSteps' => 1,
+        'phpBinary' => $phpBinary,
     ];
 
     // Capture DebugServer output
@@ -248,3 +280,63 @@ function outputBacktraceJson(string $script, ?string $breakpointStr, string $con
         $stack
     );
 })();
+
+/**
+ * @param list<string> $entries
+ */
+function applyRuntimeEnvironment(array $entries): void
+{
+    foreach ($entries as $entry) {
+        if ($entry === '') {
+            continue;
+        }
+
+        if (! str_contains($entry, '=')) {
+            fwrite(STDERR, "Error: --env must use KEY=VALUE format: {$entry}\n");
+            exit(1);
+        }
+
+        putenv($entry);
+    }
+}
+
+function applyWorkingDirectory(?string $cwd): void
+{
+    if ($cwd === null || $cwd === '') {
+        return;
+    }
+
+    $resolvedCwd = realpath($cwd);
+    if ($resolvedCwd === false || ! is_dir($resolvedCwd)) {
+        fwrite(STDERR, "Error: cwd not found: {$cwd}\n");
+        exit(1);
+    }
+
+    chdir($resolvedCwd);
+}
+
+/**
+ * @param list<string> $command
+ *
+ * @return list<string>
+ */
+function applyPhpBinaryToCommand(array $command, ?string $phpBinary): array
+{
+    if ($phpBinary === null || $phpBinary === '') {
+        return $command;
+    }
+
+    if (\Koriym\XdebugMcp\ContainerHelper::isContainerCommand($command)) {
+        return $command;
+    }
+
+    if (isset($command[0]) && XdebugRunner::isPhpBinary($command[0])) {
+        $command[0] = $phpBinary;
+
+        return $command;
+    }
+
+    array_unshift($command, $phpBinary);
+
+    return $command;
+}

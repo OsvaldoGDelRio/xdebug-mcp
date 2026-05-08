@@ -245,6 +245,35 @@ class McpServerTest extends TestCase
         $this->assertEquals('php script.py', $this->invokePrivateMethod($this->server, 'processScriptArgument', ['script.py'])); // doesn't end with php - gets prefix
     }
 
+    public function testApplyPhpBinaryToScript(): void
+    {
+        $this->assertSame(
+            '/opt/homebrew/opt/php@8.5/bin/php tests/FooTest.php',
+            $this->invokePrivateMethod($this->server, 'applyPhpBinaryToScript', ['php tests/FooTest.php', '/opt/homebrew/opt/php@8.5/bin/php']),
+        );
+        $this->assertSame(
+            '/opt/homebrew/opt/php@8.5/bin/php tests/FooTest.php',
+            $this->invokePrivateMethod($this->server, 'applyPhpBinaryToScript', ['tests/FooTest.php', '/opt/homebrew/opt/php@8.5/bin/php']),
+        );
+    }
+
+    public function testAppendRuntimeOptions(): void
+    {
+        $command = $this->invokePrivateMethod($this->server, 'appendRuntimeOptions', [
+            '/repo/bin/xcoverage',
+            [
+                'cwd' => '/tmp/project',
+                'php_binary' => '/opt/php/bin/php',
+                'env' => "PATH=/opt/php/bin:/usr/bin\nXDEBUG_MODE=coverage",
+            ],
+        ]);
+
+        $this->assertStringContainsString("--cwd='/tmp/project'", $command);
+        $this->assertStringContainsString("--php-binary='/opt/php/bin/php'", $command);
+        $this->assertStringContainsString("--env='PATH=/opt/php/bin:/usr/bin'", $command);
+        $this->assertStringContainsString("--env='XDEBUG_MODE=coverage'", $command);
+    }
+
     public function testMapPositionalArgs(): void
     {
         // Test xtrace mapping - positional args are mapped to named args

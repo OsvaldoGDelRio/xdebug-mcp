@@ -168,6 +168,12 @@ xstep --break='script.php:42' --pretty --max-value-bytes=200 --max-depth=3 -- ph
 # Code coverage
 xcoverage -- vendor/bin/phpunit
 
+# Run a project-local PHPUnit command from another directory
+xcoverage --cwd=/path/to/project -- php vendor/bin/phpunit --coverage-filter src tests/SomeTest.php
+
+# Use a specific PHP runtime and trim coverage JSON to application source
+xcoverage --php-binary=/opt/homebrew/opt/php@8.5/bin/php --source=src --exclude=vendor -- php vendor/bin/phpunit
+
 # Stack trace at breakpoint
 xback --break='app.php:50' -- php app.php
 
@@ -179,6 +185,8 @@ xcompare --break='calc.php:25' --run='php calc.php 10' --compare-with=main
 ```
 
 Run `--help` on any tool for detailed options.
+
+`xtrace`, `xprofile`, `xcoverage`, and `xback` accept `--cwd`, `--php-binary`, and repeatable `--env=KEY=VALUE` options for project-local execution. `xcoverage` also accepts `--source` and `--exclude`; when PHPUnit `--coverage-filter` is present, that filter is applied to the JSON summary as well.
 
 > **Note on `xcompare` commands:** the `--run-a`, `--run-b`, and `--run` values are executed through the shell so that quoting, redirection, and environment variables behave as users expect. Only pass trusted input to these options.
 >

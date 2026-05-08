@@ -10,7 +10,7 @@ use Koriym\XdebugMcp\XdebugRunner;
 
 function showHelp(string $scriptName): void
 {
-    echo "Usage: $scriptName [--json] [--claude] [--context=TEXT] [--include-vendor=PATTERNS] -- command\n";
+    echo "Usage: $scriptName [--json] [--claude] [--context=TEXT] [--include-vendor=PATTERNS] [--cwd=PATH] [--php-binary=PATH] [--env=KEY=VALUE] -- command\n";
     echo "\n";
     echo "⚡ AI-Optimized PHP Performance Profiler with Docker Support\n";
     echo "\n";
@@ -29,6 +29,9 @@ function showHelp(string $scriptName): void
     echo "  --claude                    Auto-analyze profile data with Claude AI\n";
     echo "  --context=TEXT             Add contextual description for AI analysis\n";
     echo "  --include-vendor=PATTERNS  Include vendor packages in performance analysis\n";
+    echo "  --cwd=PATH                 Run the target command from this working directory\n";
+    echo "  --php-binary=PATH          PHP binary used for local target commands\n";
+    echo "  --env=KEY=VALUE            Environment variable for the target command (repeatable)\n";
     echo "  --help, -h                 Show this help\n";
     echo "\n";
     echo "EXAMPLES:\n";
@@ -72,13 +75,90 @@ $jsonOutput = in_array('--json', $ownArgs);
 $claudeAnalysis = in_array('--claude', $ownArgs);
 $context = null;
 $includeVendor = null;
+$cwd = null;
+$phpBinary = null;
+$env = [];
 
 foreach ($ownArgs as $arg) {
     if (str_starts_with($arg, '--context=')) {
         $context = substr($arg, 10);
     } elseif (str_starts_with($arg, '--include-vendor=')) {
         $includeVendor = substr($arg, 17);
+    } elseif (str_starts_with($arg, '--cwd=')) {
+        $cwd = substr($arg, 6);
+    } elseif (str_starts_with($arg, '--php-binary=')) {
+        $phpBinary = substr($arg, 13);
+    } elseif (str_starts_with($arg, '--env=')) {
+        $env[] = substr($arg, 6);
     }
+}
+
+applyRuntimeEnvironment($env);
+applyWorkingDirectory($cwd);
+
+/**
+ * @param list<string> $entries
+ */
+function applyRuntimeEnvironment(array $entries): void
+{
+    foreach ($entries as $entry) {
+        if ($entry === '') {
+            continue;
+        }
+
+        if (! str_contains($entry, '=')) {
+            fwrite(STDERR, "❌ Error: --env must use KEY=VALUE format: {$entry}\n");
+            exit(1);
+        }
+
+        putenv($entry);
+    }
+}
+
+function applyWorkingDirectory(?string $cwd): void
+{
+    if ($cwd === null || $cwd === '') {
+        return;
+    }
+
+    $resolvedCwd = realpath($cwd);
+    if ($resolvedCwd === false || ! is_dir($resolvedCwd)) {
+        fwrite(STDERR, "❌ Error: cwd not found: {$cwd}\n");
+        exit(1);
+    }
+
+    chdir($resolvedCwd);
+}
+
+/**
+ * @param list<string> $argv
+ *
+ * @return list<string>
+ */
+function applyPhpBinaryToRunnerArgv(array $argv, int $separatorIndex, ?string $phpBinary): array
+{
+    if ($phpBinary === null || $phpBinary === '') {
+        return $argv;
+    }
+
+    $commandIndex = $separatorIndex + 1;
+    if (! isset($argv[$commandIndex])) {
+        return $argv;
+    }
+
+    if (in_array($argv[$commandIndex], ['docker', 'podman', 'kubectl'], true)) {
+        return $argv;
+    }
+
+    if (XdebugRunner::isPhpBinary($argv[$commandIndex])) {
+        $argv[$commandIndex] = $phpBinary;
+
+        return $argv;
+    }
+
+    array_splice($argv, $commandIndex, 0, [$phpBinary]);
+
+    return $argv;
 }
 
 // Get Xdebug output directory
@@ -90,7 +170,7 @@ if (!$jsonOutput) {
 
 // Execute profile using XdebugRunner
 try {
-    $runner = new XdebugRunner($argv);
+    $runner = new XdebugRunner(applyPhpBinaryToRunnerArgv($argv, (int) $separatorIndex, $phpBinary));
     $runner->setMode('profile');
     $runner->setContext($context);
     $runner->setIncludeVendor($includeVendor);

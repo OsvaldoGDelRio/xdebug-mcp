@@ -40,6 +40,8 @@ use function is_string;
 use function json_decode;
 use function json_encode;
 use function preg_match;
+use function preg_replace;
+use function preg_split;
 use function str_contains;
 use function str_ends_with;
 use function str_starts_with;
@@ -111,6 +113,21 @@ final class McpServer
                             'description' => 'Include vendor packages in trace (e.g., "bear/*,ray/di" or "*/*" for all)',
                             'default' => '',
                         ],
+                        'cwd' => [
+                            'type' => 'string',
+                            'description' => 'Working directory for the target command',
+                            'default' => '',
+                        ],
+                        'php_binary' => [
+                            'type' => 'string',
+                            'description' => 'PHP binary used for the target command',
+                            'default' => '',
+                        ],
+                        'env' => [
+                            'type' => 'string',
+                            'description' => 'Newline-separated KEY=VALUE environment variables for the target command',
+                            'default' => '',
+                        ],
                     ],
                     'required' => ['script'],
                 ],
@@ -133,6 +150,21 @@ final class McpServer
                         'include_vendor' => [
                             'type' => 'string',
                             'description' => 'Include vendor packages in profile (e.g., "bear/*,ray/di" or "*/*" for all)',
+                            'default' => '',
+                        ],
+                        'cwd' => [
+                            'type' => 'string',
+                            'description' => 'Working directory for the target command',
+                            'default' => '',
+                        ],
+                        'php_binary' => [
+                            'type' => 'string',
+                            'description' => 'PHP binary used for the target command',
+                            'default' => '',
+                        ],
+                        'env' => [
+                            'type' => 'string',
+                            'description' => 'Newline-separated KEY=VALUE environment variables for the target command',
                             'default' => '',
                         ],
                     ],
@@ -193,6 +225,31 @@ final class McpServer
                             'description' => 'Include vendor packages in coverage (e.g., "bear/*,ray/di" or "*/*" for all)',
                             'default' => '',
                         ],
+                        'cwd' => [
+                            'type' => 'string',
+                            'description' => 'Working directory for the target command',
+                            'default' => '',
+                        ],
+                        'php_binary' => [
+                            'type' => 'string',
+                            'description' => 'PHP binary used for the target command',
+                            'default' => '',
+                        ],
+                        'env' => [
+                            'type' => 'string',
+                            'description' => 'Newline-separated KEY=VALUE environment variables for the target command',
+                            'default' => '',
+                        ],
+                        'source' => [
+                            'type' => 'string',
+                            'description' => 'Comma-separated source paths to include in the coverage JSON summary',
+                            'default' => '',
+                        ],
+                        'exclude' => [
+                            'type' => 'string',
+                            'description' => 'Comma-separated paths to exclude from the coverage JSON summary',
+                            'default' => '',
+                        ],
                     ],
                     'required' => ['script'],
                 ],
@@ -220,6 +277,21 @@ final class McpServer
                         'context' => [
                             'type' => 'string',
                             'description' => 'Context description for backtrace analysis',
+                            'default' => '',
+                        ],
+                        'cwd' => [
+                            'type' => 'string',
+                            'description' => 'Working directory for the target command',
+                            'default' => '',
+                        ],
+                        'php_binary' => [
+                            'type' => 'string',
+                            'description' => 'PHP binary used for the target command',
+                            'default' => '',
+                        ],
+                        'env' => [
+                            'type' => 'string',
+                            'description' => 'Newline-separated KEY=VALUE environment variables for the target command',
                             'default' => '',
                         ],
                     ],
@@ -412,6 +484,21 @@ final class McpServer
                             'required' => false,
                         ],
                         [
+                            'name' => 'cwd',
+                            'description' => 'Working directory for the target command',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'php_binary',
+                            'description' => 'PHP binary used for the target command',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'env',
+                            'description' => 'Newline-separated KEY=VALUE environment variables for the target command',
+                            'required' => false,
+                        ],
+                        [
                             'name' => 'last',
                             'description' => 'Use settings from last execution (true/false)',
                             'required' => false,
@@ -474,6 +561,21 @@ final class McpServer
                             'required' => false,
                         ],
                         [
+                            'name' => 'cwd',
+                            'description' => 'Working directory for the target command',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'php_binary',
+                            'description' => 'PHP binary used for the target command',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'env',
+                            'description' => 'Newline-separated KEY=VALUE environment variables for the target command',
+                            'required' => false,
+                        ],
+                        [
                             'name' => 'last',
                             'description' => 'Use settings from last execution (true/false)',
                             'required' => false,
@@ -497,6 +599,31 @@ final class McpServer
                         [
                             'name' => 'include_vendor',
                             'description' => 'Include vendor packages in coverage (e.g., "bear/*,ray/di" or "*/*" for all)',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'cwd',
+                            'description' => 'Working directory for the target command',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'php_binary',
+                            'description' => 'PHP binary used for the target command',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'env',
+                            'description' => 'Newline-separated KEY=VALUE environment variables for the target command',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'source',
+                            'description' => 'Comma-separated source paths to include in the coverage JSON summary',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'exclude',
+                            'description' => 'Comma-separated paths to exclude from the coverage JSON summary',
                             'required' => false,
                         ],
                         [
@@ -528,6 +655,21 @@ final class McpServer
                         [
                             'name' => 'context',
                             'description' => 'Context description for backtrace analysis',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'cwd',
+                            'description' => 'Working directory for the target command',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'php_binary',
+                            'description' => 'PHP binary used for the target command',
+                            'required' => false,
+                        ],
+                        [
+                            'name' => 'env',
+                            'description' => 'Newline-separated KEY=VALUE environment variables for the target command',
                             'required' => false,
                         ],
                     ],
@@ -649,6 +791,58 @@ final class McpServer
         if (! preg_match('/^(\S*[\/\\\\])?php([0-9.]*)?(\.exe)?(\\s+|$)/i', $script)) {
             throw new InvalidArgumentException('Script must start with PHP binary. Examples: "php script.php", "php8.2 script.php", "/usr/bin/php script.php", "C:\php\php.exe script.php". Received: "' . $script . '"');
         }
+    }
+
+    private function applyPhpBinaryToScript(string $script, string $phpBinary): string
+    {
+        if ($phpBinary === '') {
+            return $script;
+        }
+
+        if (preg_match('/^(\S*[\/\\\\])?php([0-9.]*)?(\.exe)?(\\s+|$)/i', $script)) {
+            return (string) preg_replace('/^\S+/', $phpBinary, $script, 1);
+        }
+
+        return $phpBinary . ' ' . $script;
+    }
+
+    /** @param array<string, string> $args */
+    private function appendRuntimeOptions(string $cmd, array $args): string
+    {
+        $optionMap = [
+            'cwd' => '--cwd=',
+            'php_binary' => '--php-binary=',
+        ];
+
+        foreach ($optionMap as $argName => $cliOption) {
+            $value = $args[$argName] ?? '';
+            if ($value === '') {
+                continue;
+            }
+
+            $cmd .= ' ' . $cliOption . escapeshellarg($value);
+        }
+
+        foreach ($this->splitMultilineOption($args['env'] ?? '') as $entry) {
+            $cmd .= ' --env=' . escapeshellarg($entry);
+        }
+
+        return $cmd;
+    }
+
+    /** @return list<string> */
+    private function splitMultilineOption(string $value): array
+    {
+        if (trim($value) === '') {
+            return [];
+        }
+
+        $parts = preg_split('/\r\n|\r|\n/', $value);
+        if ($parts === false) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map('trim', $parts), static fn (string $part): bool => $part !== ''));
     }
 
     /**
@@ -820,12 +1014,14 @@ final class McpServer
         try {
             $originalScript = $args['script'] ?? '';
             $script = $this->processScriptArgument($originalScript);
+            $script = $this->applyPhpBinaryToScript($script, $args['php_binary'] ?? '');
             $this->validatePhpBinaryScript($script);
             $context = $args['context'] ?? '';
             $includeVendor = $args['include_vendor'] ?? '';
 
             // Build command - user must specify PHP binary explicitly
             $cmd = $this->binDir . '/xtrace --json';
+            $cmd = $this->appendRuntimeOptions($cmd, $args);
 
             // Add include_vendor option if specified
             if ($includeVendor !== '') {
@@ -1003,12 +1199,14 @@ final class McpServer
         try {
             $script = $args['script'] ?? '';
             $script = $this->processScriptArgument($script);
+            $script = $this->applyPhpBinaryToScript($script, $args['php_binary'] ?? '');
             $this->validatePhpBinaryScript($script);
             $context = $args['context'] ?? '';
             $includeVendor = $args['include_vendor'] ?? '';
 
             // Build command - user must specify PHP binary explicitly
             $cmd = $this->binDir . '/xprofile --json';
+            $cmd = $this->appendRuntimeOptions($cmd, $args);
 
             // Add include_vendor option if specified
             if ($includeVendor !== '') {
@@ -1064,16 +1262,26 @@ final class McpServer
         try {
             $script = $args['script'] ?? '';
             $script = $this->processScriptArgument($script);
+            $script = $this->applyPhpBinaryToScript($script, $args['php_binary'] ?? '');
             $this->validatePhpBinaryScript($script);
             $context = $args['context'] ?? '';
             $includeVendor = $args['include_vendor'] ?? '';
 
             // Build command - user must specify PHP binary explicitly
             $cmd = $this->binDir . '/xcoverage';
+            $cmd = $this->appendRuntimeOptions($cmd, $args);
 
             // Add include_vendor option if specified
             if ($includeVendor !== '') {
                 $cmd .= ' --include-vendor=' . escapeshellarg($includeVendor);
+            }
+
+            if (($args['source'] ?? '') !== '') {
+                $cmd .= ' --source=' . escapeshellarg($args['source']);
+            }
+
+            if (($args['exclude'] ?? '') !== '') {
+                $cmd .= ' --exclude=' . escapeshellarg($args['exclude']);
             }
 
             $cmd .= ' -- ' . $script;
@@ -1125,6 +1333,7 @@ final class McpServer
         try {
             $originalScript = $args['script'] ?? '';
             $script = $this->processScriptArgument($originalScript);
+            $script = $this->applyPhpBinaryToScript($script, $args['php_binary'] ?? '');
             $this->validatePhpBinaryScript($script);
             $context = $args['context'] ?? '';
             $breakpoint = $args['breakpoint'] ?? '';
@@ -1132,6 +1341,7 @@ final class McpServer
 
             // Build command
             $cmd = $this->binDir . '/xback';
+            $cmd = $this->appendRuntimeOptions($cmd, $args);
 
             // Add breakpoint if specified
             if ($breakpoint !== '') {

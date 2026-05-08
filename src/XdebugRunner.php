@@ -290,7 +290,7 @@ class XdebugRunner
             $phpBinary = array_shift($workingParts);
         }
 
-        $xdebugArgs = $this->generateXdebugArguments();
+        $xdebugArgs = $this->generateXdebugArguments($phpBinary);
 
         return escapeshellarg($phpBinary) . ' ' . implode(' ', $xdebugArgs) . ' ' . implode(' ', array_map(escapeshellarg(...), $workingParts));
     }
@@ -333,10 +333,12 @@ class XdebugRunner
     }
 
     /** @return string[] */
-    private function generateXdebugArguments(): array
+    private function generateXdebugArguments(string|null $phpBinary = null): array
     {
         // Add zend_extension flag if Xdebug is not already loaded
-        $xdebugFlag = XdebugFinder::getXdebugFlag();
+        $xdebugFlag = $phpBinary !== null
+            ? XdebugFinder::getXdebugFlagForPhpBinary($phpBinary)
+            : XdebugFinder::getXdebugFlag();
         $args = [];
 
         if ($xdebugFlag !== '') {

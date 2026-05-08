@@ -32,6 +32,11 @@ if (in_array('--help', $argv) || in_array('-h', $argv)) {
     echo "  --raw                     Use raw Xdebug coverage (ignores @codeCoverageIgnore)\n";
     echo "  --branch-coverage         Enable branch/path coverage (--raw mode only)\n";
     echo "  --include-vendor=PATTERNS Include vendor packages (--raw mode only)\n";
+    echo "  --cwd=PATH                Run the target command from this working directory\n";
+    echo "  --php-binary=PATH         PHP binary used to run PHPUnit or raw scripts\n";
+    echo "  --env=KEY=VALUE           Environment variable for the target command (repeatable)\n";
+    echo "  --source=PATHS            Comma-separated source paths to include in JSON output\n";
+    echo "  --exclude=PATHS           Comma-separated paths to exclude from JSON output\n";
     echo "  --help, -h                Show this help\n";
     echo "\n";
     echo "COMMON USAGE PATTERNS:\n";
@@ -55,11 +60,13 @@ if (in_array('--help', $argv) || in_array('-h', $argv)) {
 
 // Parse options
 $optind = 0;
-$options = getopt('', ['include-vendor::', 'branch-coverage', 'raw'], $optind);
+$options = getopt('', ['include-vendor::', 'branch-coverage', 'raw', 'cwd:', 'php-binary:', 'env:', 'source:', 'exclude:'], $optind);
 
 $includeVendor = $options['include-vendor'] ?? null;
 $branchCoverage = isset($options['branch-coverage']);
 $rawMode = isset($options['raw']);
+$cwd = isset($options['cwd']) ? (string) $options['cwd'] : null;
+$phpBinaryOption = isset($options['php-binary']) ? (string) $options['php-binary'] : null;
 
 // Get remaining arguments
 $args = $optind !== null ? array_slice($argv, $optind) : [];
@@ -74,6 +81,58 @@ $debug = getenv('COVERAGE_DEBUG');
 if ($debug) {
     fwrite(STDERR, "[COVERAGE_DEBUG] Raw mode: " . ($rawMode ? 'true' : 'false') . "\n");
     fwrite(STDERR, "[COVERAGE_DEBUG] Args: " . json_encode($args) . "\n");
+}
+
+applyEnvironmentOption($options['env'] ?? []);
+
+if ($cwd !== null && $cwd !== '') {
+    $resolvedCwd = realpath($cwd);
+    if ($resolvedCwd === false || ! is_dir($resolvedCwd)) {
+        fwrite(STDERR, "Error: cwd not found: {$cwd}\n");
+        exit(1);
+    }
+
+    chdir($resolvedCwd);
+}
+
+$argumentPhpBinary = extractPhpBinaryFromArguments($args);
+$phpBinary = $phpBinaryOption !== null && $phpBinaryOption !== ''
+    ? $phpBinaryOption
+    : ($argumentPhpBinary ?? PHP_BINARY);
+
+$sourceFilters = parsePathFilters($options['source'] ?? []);
+$excludeFilters = parsePathFilters($options['exclude'] ?? []);
+
+/**
+ * @param string|array<int, string> $envOption
+ */
+function applyEnvironmentOption(string|array $envOption): void
+{
+    $entries = is_array($envOption) ? $envOption : [$envOption];
+    foreach ($entries as $entry) {
+        if ($entry === '') {
+            continue;
+        }
+
+        if (! str_contains($entry, '=')) {
+            fwrite(STDERR, "Error: --env must use KEY=VALUE format: {$entry}\n");
+            exit(1);
+        }
+
+        putenv($entry);
+    }
+}
+
+/**
+ * @param list<string> $args
+ */
+function extractPhpBinaryFromArguments(array &$args): string|null
+{
+    if ($args === [] || ! isPhpBinary($args[0])) {
+        return null;
+    }
+
+    return array_shift($args);
 }
 
 /**
@@ -114,10 +173,6 @@ function normalizePhpUnitArguments(array $args): array
  */
 function normalizeRawArguments(array $args): array
 {
-    if (! empty($args) && isPhpBinary($args[0])) {
-        return array_slice($args, 1);
-    }
-
     return $args;
 }
 
@@ -135,6 +190,153 @@ function isPhpUnitCommand(string $arg): bool
     return $binary === 'phpunit' || $binary === 'phpunit.phar';
 }
 
+/**
+ * @param string|array<int, string> $option
+ *
+ * @return list<string>
+ */
+function parsePathFilters(string|array $option): array
+{
+    $values = is_array($option) ? $option : [$option];
+    $filters = [];
+    foreach ($values as $value) {
+        foreach (explode(',', $value) as $path) {
+            $path = trim($path);
+            if ($path === '') {
+                continue;
+            }
+
+            $filters[] = normalizeCoveragePath($path);
+        }
+    }
+
+    return array_values(array_unique($filters));
+}
+
+function normalizeCoveragePath(string $path): string
+{
+    if (! isAbsoluteCoveragePath($path) && ! str_contains($path, '*')) {
+        $path = getcwd() . DIRECTORY_SEPARATOR . $path;
+    }
+
+    $realPath = str_contains($path, '*') ? false : realpath($path);
+    $normalized = str_replace('\\', '/', $realPath !== false ? $realPath : $path);
+
+    return rtrim($normalized, '/');
+}
+
+function isAbsoluteCoveragePath(string $path): bool
+{
+    return str_starts_with($path, '/') || preg_match('/^[A-Za-z]:[\\\\\\/]/', $path) === 1;
+}
+
+/**
+ * @param list<string> $phpunitArgs
+ *
+ * @return list<string>
+ */
+function extractPhpUnitCoverageFilters(array $phpunitArgs): array
+{
+    $filters = [];
+    for ($i = 0; $i < count($phpunitArgs); $i++) {
+        $arg = $phpunitArgs[$i];
+        if ($arg === '--coverage-filter' && isset($phpunitArgs[$i + 1])) {
+            $filters[] = $phpunitArgs[$i + 1];
+            $i++;
+            continue;
+        }
+
+        if (str_starts_with($arg, '--coverage-filter=')) {
+            $filters[] = substr($arg, strlen('--coverage-filter='));
+        }
+    }
+
+    return parsePathFilters($filters);
+}
+
+/**
+ * @param list<string> $sourceFilters
+ * @param list<string> $excludeFilters
+ */
+function shouldIncludeCoverageFile(string $filePath, array $sourceFilters, array $excludeFilters): bool
+{
+    $normalizedFile = normalizeCoveragePath($filePath);
+
+    if ($sourceFilters !== [] && ! coveragePathMatchesAnyFilter($normalizedFile, $sourceFilters)) {
+        return false;
+    }
+
+    return ! coveragePathMatchesAnyFilter($normalizedFile, $excludeFilters);
+}
+
+/**
+ * @param list<string> $filters
+ */
+function coveragePathMatchesAnyFilter(string $normalizedFile, array $filters): bool
+{
+    foreach ($filters as $filter) {
+        if (str_contains($filter, '*') && fnmatch($filter, $normalizedFile)) {
+            return true;
+        }
+
+        if ($normalizedFile === $filter || str_starts_with($normalizedFile, $filter . '/')) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function isIgnorableCoverageLine(string $filePath, int $lineNum): bool
+{
+    static $lineCache = [];
+
+    $normalizedFile = normalizeCoveragePath($filePath);
+    if (! array_key_exists($normalizedFile, $lineCache)) {
+        $lineCache[$normalizedFile] = is_file($normalizedFile) ? file($normalizedFile) : false;
+    }
+
+    if ($lineCache[$normalizedFile] === false || ! isset($lineCache[$normalizedFile][$lineNum - 1])) {
+        return false;
+    }
+
+    $line = trim($lineCache[$normalizedFile][$lineNum - 1]);
+
+    return $line === '' || preg_match('/^[{}\\[\\](),;]+$/', $line) === 1;
+}
+
+/**
+ * @param list<int> $lineNums
+ *
+ * @return list<int|string>
+ */
+function groupLineRanges(array $lineNums): array
+{
+    if ($lineNums === []) {
+        return [];
+    }
+
+    sort($lineNums);
+    $ranges = [];
+    $start = $lineNums[0];
+    $end = $start;
+
+    for ($i = 1; $i < count($lineNums); $i++) {
+        if ($lineNums[$i] === $end + 1) {
+            $end = $lineNums[$i];
+            continue;
+        }
+
+        $ranges[] = ($start === $end) ? $start : "{$start}-{$end}";
+        $start = $lineNums[$i];
+        $end = $start;
+    }
+
+    $ranges[] = ($start === $end) ? $start : "{$start}-{$end}";
+
+    return $ranges;
+}
+
 // PHPUnit mode (default) - uses PHPUnit's coverage with @codeCoverageIgnore support
 if (!$rawMode) {
     // Check if PHPUnit is available
@@ -148,14 +350,17 @@ if (!$rawMode) {
     $coverageFile = tempnam(sys_get_temp_dir(), 'phpunit_coverage_') . '.xml';
 
     // Get Xdebug flag for explicit loading
-    $xdebugFlag = XdebugFinder::getXdebugFlag();
-    $phpPath = PHP_BINARY;
+    $phpPath = $phpBinary;
+    $xdebugFlag = XdebugFinder::getXdebugFlagForPhpBinary($phpPath);
 
     // Build PHPUnit command with coverage-clover (stable XML format)
     $phpunitArgs = array_merge(
         ['--coverage-clover=' . $coverageFile, '--testdox', '--no-progress', '--colors=never'],
         normalizePhpUnitArguments($args),
     );
+    if ($sourceFilters === []) {
+        $sourceFilters = extractPhpUnitCoverageFilters($phpunitArgs);
+    }
 
     echo "# Running PHPUnit with coverage (respects @codeCoverageIgnore)\n";
 
@@ -222,6 +427,10 @@ if (!$rawMode) {
 
         foreach ($xml->project->file as $file) {
             $filePath = (string)$file['name'];
+            if (! shouldIncludeCoverageFile($filePath, $sourceFilters, $excludeFilters)) {
+                continue;
+            }
+
             $totalFiles++;
             $uncoveredLineNums = [];
 
@@ -232,6 +441,10 @@ if (!$rawMode) {
                 }
 
                 $lineNum = (int)$line['num'];
+                if (isIgnorableCoverageLine($filePath, $lineNum)) {
+                    continue;
+                }
+
                 $count = (int)$line['count'];
                 $totalLines++;
 
@@ -244,23 +457,7 @@ if (!$rawMode) {
             }
 
             if (!empty($uncoveredLineNums)) {
-                // Group consecutive lines into ranges
-                sort($uncoveredLineNums);
-                $ranges = [];
-                $start = $uncoveredLineNums[0];
-                $end = $start;
-
-                for ($i = 1; $i < count($uncoveredLineNums); $i++) {
-                    if ($uncoveredLineNums[$i] === $end + 1) {
-                        $end = $uncoveredLineNums[$i];
-                    } else {
-                        $ranges[] = ($start === $end) ? $start : "$start-$end";
-                        $start = $uncoveredLineNums[$i];
-                        $end = $start;
-                    }
-                }
-                $ranges[] = ($start === $end) ? $start : "$start-$end";
-                $uncoveredOnly[$filePath] = $ranges;
+                $uncoveredOnly[$filePath] = groupLineRanges($uncoveredLineNums);
             }
         }
 
@@ -299,6 +496,8 @@ if (!$rawMode) {
 $args = normalizeRawArguments($args);
 $shutdownScript = tempnam(sys_get_temp_dir(), 'coverage_end_');
 $branchFlag = $branchCoverage ? 'true' : 'false';
+$exportedSourceFilters = var_export($sourceFilters, true);
+$exportedExcludeFilters = var_export($excludeFilters, true);
 $includeVendorRequire = '';
 if ($includeVendor !== null) {
     $filterPath = __DIR__ . '/../prepend_filter.php';
@@ -310,17 +509,82 @@ file_put_contents($shutdownScript, '<?php
 ' . $includeVendorRequire . '
 $tempDir = sys_get_temp_dir();
 $branchCoverage = ' . $branchFlag . ';
+$sourceFilters = ' . $exportedSourceFilters . ';
+$excludeFilters = ' . $exportedExcludeFilters . ';
+function xdebug_mcp_normalize_coverage_path(string $path): string {
+    $realPath = strpos($path, "*") === false ? realpath($path) : false;
+    return rtrim(str_replace("\\\\", "/", $realPath !== false ? $realPath : $path), "/");
+}
+function xdebug_mcp_path_matches_any_filter(string $normalizedFile, array $filters): bool {
+    foreach ($filters as $filter) {
+        if (strpos($filter, "*") !== false && fnmatch($filter, $normalizedFile)) {
+            return true;
+        }
+        if ($normalizedFile === $filter || str_starts_with($normalizedFile, $filter . "/")) {
+            return true;
+        }
+    }
+    return false;
+}
+function xdebug_mcp_should_include_coverage_file(string $filePath, array $sourceFilters, array $excludeFilters): bool {
+    $normalizedFile = xdebug_mcp_normalize_coverage_path($filePath);
+    if ($sourceFilters !== [] && ! xdebug_mcp_path_matches_any_filter($normalizedFile, $sourceFilters)) {
+        return false;
+    }
+    return ! xdebug_mcp_path_matches_any_filter($normalizedFile, $excludeFilters);
+}
+function xdebug_mcp_is_ignorable_coverage_line(string $filePath, int $lineNum): bool {
+    static $lineCache = [];
+    $normalizedFile = xdebug_mcp_normalize_coverage_path($filePath);
+    if (! array_key_exists($normalizedFile, $lineCache)) {
+        $lineCache[$normalizedFile] = is_file($normalizedFile) ? file($normalizedFile) : false;
+    }
+    if ($lineCache[$normalizedFile] === false || ! isset($lineCache[$normalizedFile][$lineNum - 1])) {
+        return false;
+    }
+    $line = trim($lineCache[$normalizedFile][$lineNum - 1]);
+    return $line === "" || preg_match("/^[{}\\\\[\\\\](),;]+$/", $line) === 1;
+}
+function xdebug_mcp_group_line_ranges(array $lineNums): array {
+    if ($lineNums === []) {
+        return [];
+    }
+    sort($lineNums);
+    $ranges = [];
+    $start = $lineNums[0];
+    $end = $start;
+    for ($i = 1; $i < count($lineNums); $i++) {
+        if ($lineNums[$i] === $end + 1) {
+            $end = $lineNums[$i];
+            continue;
+        }
+        $ranges[] = ($start === $end) ? $start : "$start-$end";
+        $start = $lineNums[$i];
+        $end = $start;
+    }
+    $ranges[] = ($start === $end) ? $start : "$start-$end";
+    return $ranges;
+}
 if ($branchCoverage) {
-    xdebug_set_filter(XDEBUG_FILTER_CODE_COVERAGE, XDEBUG_PATH_EXCLUDE, [getcwd() . "/vendor/", $tempDir]);
+    if ($sourceFilters !== []) {
+        xdebug_set_filter(XDEBUG_FILTER_CODE_COVERAGE, XDEBUG_PATH_INCLUDE, $sourceFilters);
+    } else {
+        xdebug_set_filter(XDEBUG_FILTER_CODE_COVERAGE, XDEBUG_PATH_EXCLUDE, [getcwd() . "/vendor/", $tempDir]);
+    }
     xdebug_start_code_coverage(XDEBUG_CC_UNUSED | XDEBUG_CC_DEAD_CODE | XDEBUG_CC_BRANCH_CHECK);
 } else {
-    xdebug_set_filter(XDEBUG_FILTER_CODE_COVERAGE, XDEBUG_PATH_EXCLUDE, [getcwd() . "/vendor/", getcwd() . "/tests/", $tempDir]);
+    if ($sourceFilters !== []) {
+        xdebug_set_filter(XDEBUG_FILTER_CODE_COVERAGE, XDEBUG_PATH_INCLUDE, $sourceFilters);
+    } else {
+        xdebug_set_filter(XDEBUG_FILTER_CODE_COVERAGE, XDEBUG_PATH_EXCLUDE, [getcwd() . "/vendor/", getcwd() . "/tests/", $tempDir]);
+    }
     xdebug_start_code_coverage(XDEBUG_CC_UNUSED | XDEBUG_CC_DEAD_CODE);
 }
-register_shutdown_function(function() use ($tempDir, $branchCoverage) {
+register_shutdown_function(function() use ($tempDir, $branchCoverage, $sourceFilters, $excludeFilters) {
     $coverage = xdebug_get_code_coverage();
-    $filtered = array_filter($coverage, function($path) use ($tempDir) {
-        return strpos($path, $tempDir) === false;
+    $filtered = array_filter($coverage, function($path) use ($tempDir, $sourceFilters, $excludeFilters) {
+        return strpos($path, $tempDir) === false
+            && xdebug_mcp_should_include_coverage_file($path, $sourceFilters, $excludeFilters);
     }, ARRAY_FILTER_USE_KEY);
 
     if ($branchCoverage) {
@@ -376,6 +640,10 @@ register_shutdown_function(function() use ($tempDir, $branchCoverage) {
                 $uncoveredLineNums = [];
                 foreach ($lines as $lineNum => $hitCount) {
                     if (is_numeric($lineNum)) {
+                        if (xdebug_mcp_is_ignorable_coverage_line($file, (int)$lineNum)) {
+                            continue;
+                        }
+
                         $totalLines++;
                         if ($hitCount > 0) {
                             $coveredLines++;
@@ -386,21 +654,7 @@ register_shutdown_function(function() use ($tempDir, $branchCoverage) {
                     }
                 }
                 if (!empty($uncoveredLineNums)) {
-                    sort($uncoveredLineNums);
-                    $ranges = [];
-                    $start = $uncoveredLineNums[0];
-                    $end = $start;
-                    for ($i = 1; $i < count($uncoveredLineNums); $i++) {
-                        if ($uncoveredLineNums[$i] === $end + 1) {
-                            $end = $uncoveredLineNums[$i];
-                        } else {
-                            $ranges[] = ($start === $end) ? $start : "$start-$end";
-                            $start = $uncoveredLineNums[$i];
-                            $end = $start;
-                        }
-                    }
-                    $ranges[] = ($start === $end) ? $start : "$start-$end";
-                    $uncoveredOnly[$file] = $ranges;
+                    $uncoveredOnly[$file] = xdebug_mcp_group_line_ranges($uncoveredLineNums);
                 }
             }
         }
@@ -425,8 +679,8 @@ register_shutdown_function(function() use ($tempDir, $branchCoverage) {
 });
 ');
 
-$phpPath = PHP_BINARY;
-$xdebugFlag = XdebugFinder::getXdebugFlag();
+$phpPath = $phpBinary;
+$xdebugFlag = XdebugFinder::getXdebugFlagForPhpBinary($phpPath);
 $escapedPrependFile = escapeshellarg($shutdownScript);
 
 // Default to PHPUnit for raw mode if no args
