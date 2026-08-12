@@ -444,7 +444,7 @@ function parseBreakpoints(string $breakSpec, bool $isDockerCommand = false): arr
 
     // Use advanced breakpoints if specified, otherwise use legacy format
     if (!empty($breakpoints)) {
-        $server = new DebugServer($targetScript, Constants::XDEBUG_DEBUG_PORT, null, [
+        $server = new DebugServer($targetScript, Constants::debugPort(), null, [
             'breakpoints' => $breakpoints,
             'command' => $command,
             'traceOnly' => $traceOnly,
@@ -462,7 +462,7 @@ function parseBreakpoints(string $breakSpec, bool $isDockerCommand = false): arr
         if (count($command) > 1 || ($command[0] !== $targetScript)) {
             $options['command'] = $command;
         }
-        $server = new DebugServer($targetScript, Constants::XDEBUG_DEBUG_PORT, $breakpointLine, $options, $jsonOutput);
+        $server = new DebugServer($targetScript, Constants::debugPort(), $breakpointLine, $options, $jsonOutput);
     }
     $server();
 })();

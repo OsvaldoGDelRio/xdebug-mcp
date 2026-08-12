@@ -208,7 +208,7 @@ function outputBacktraceJson(string $script, ?string $breakpointStr, string $con
 
     // Capture DebugServer output
     ob_start();
-    $server = new DebugServer($targetScript, Constants::XDEBUG_DEBUG_PORT, null, $options, true);
+    $server = new DebugServer($targetScript, Constants::debugPort(), null, $options, true);
     $server();
     $output = ob_get_clean();
 
